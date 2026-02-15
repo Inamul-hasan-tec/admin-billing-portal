@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "name": "billing-admin",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ],
+  "env": {
+    "VITE_API_URL": "http://72.62.230.143/api"
+  }
+}
