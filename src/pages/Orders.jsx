@@ -5,6 +5,7 @@ import { format } from 'date-fns';
 
 const Orders = () => {
   const [orders, setOrders] = useState([]);
+  const [hotelEmpireOrders, setHotelEmpireOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -15,6 +16,7 @@ const Orders = () => {
 
   useEffect(() => {
     fetchOrders();
+    fetchHotelEmpireOrders();
   }, [statusFilter, startDate, endDate]);
 
   const fetchOrders = async () => {
@@ -35,10 +37,43 @@ const Orders = () => {
     }
   };
 
+  const fetchHotelEmpireOrders = async () => {
+    try {
+      console.log('🏨 Fetching Hotel Empire orders...');
+      // Fetch Hotel Empire orders from their separate API
+      const response = await axios.get('/hotelempire/admin/orders');
+      console.log('🏨 Hotel Empire API response:', response.data);
+      const hotelOrders = response.data.data || [];
+      console.log('🏨 Hotel Empire orders count:', hotelOrders.length);
+      
+      // Hotel Empire orders already have the correct format from backend
+      // Just ensure they have the necessary fields
+      const processedOrders = hotelOrders.map(order => ({
+        ...order,
+        // Backend returns these fields correctly, just ensure they exist
+        item_count: order.item_count || order.items?.length || 0,
+        items: order.items || []
+      }));
+      
+      console.log('🏨 Processed Hotel Empire orders:', processedOrders);
+      setHotelEmpireOrders(processedOrders);
+    } catch (error) {
+      console.error('❌ Error fetching Hotel Empire orders:', error);
+      // Don't show alert for Hotel Empire orders, just log it
+      setHotelEmpireOrders([]);
+    }
+  };
+
   const fetchOrderDetails = async (orderId) => {
     try {
-      const response = await axios.get(`/orders/${orderId}`);
-      setSelectedOrder(response.data.data);
+      // Check if this is a Hotel Empire order (starts with HE-)
+      if (orderId.startsWith('HE-')) {
+        const response = await axios.get(`/hotelempire/orders/${orderId}`);
+        setSelectedOrder(response.data.data);
+      } else {
+        const response = await axios.get(`/orders/${orderId}`);
+        setSelectedOrder(response.data.data);
+      }
       setShowModal(true);
     } catch (error) {
       console.error('Error fetching order details:', error);
@@ -112,31 +147,86 @@ const Orders = () => {
         return;
       }
       
-      // Create CSV content for single order
-      const csvContent = [
-        ['Order ID', 'Customer ID', 'Customer Name', 'Order Date', 'Status', 'Product ID', 'Product Name', 'HSN Code', 'Quantity', 'Unit', 'Rate', 'Tax Rate', 'Total'],
-        ...order.items.map(item => [
-          order.order_id,
+      // Create CSV content with Zoho-compatible column names + extras
+      const csvHeaders = [
+        'Invoice Date', 'Due Date', 'Currency Code',
+        'Customer_ID', 'Customer Name', 'GST Treatment', 'GST Identification Number (GSTIN)',
+        'Place of Supply', 'Payment Terms', 'Payment Terms Label',
+        'Phone', 'Email', 'Address', 'City', 'State', 'Pincode',
+        'Product_ID', 'Item Name', 'SKU', 'HSN/SAC', 'Item Type', 'Category',
+        'Quantity', 'Usage unit', 'Item Price',
+        'Is Inclusive Tax', 'Item Tax', 'Item Tax %', 'Item Tax Type', 'Discount',
+        'Status', 'Template Name'
+      ];
+
+      const csvRows = order.items.map(item => {
+        // Auto-pad HSN code to 8 digits
+        let hsnCode = String(item.hsn_code || '').trim();
+        if (hsnCode && hsnCode.length < 8) {
+          hsnCode = hsnCode.padStart(8, '0');
+        }
+
+        // Calculate invoice details
+        const paymentTermsDays = parseInt(order.payment_terms) || 0;
+        const invoiceDate = new Date(order.order_date);
+        const dueDate = new Date(invoiceDate.getTime() + (paymentTermsDays * 24 * 60 * 60 * 1000));
+        
+        // Calculate tax details
+        const taxRate = parseFloat(item.tax_rate) || 18;
+        const itemTax = `GST${taxRate}`;
+
+        return [
+          format(invoiceDate, 'yyyy-MM-dd'), // Invoice Date
+          format(dueDate, 'yyyy-MM-dd'), // Due Date
+          'INR', // Currency Code
           order.customer_id,
           order.customer_name,
-          format(new Date(order.order_date), 'yyyy-MM-dd'),
-          order.status,
+          order.gst_treatment || 'business_gst',
+          order.gstin || '',
+          order.place_of_supply || '',
+          order.payment_terms || '0',
+          order.payment_terms_label || 'Due on Receipt',
+          order.phone || '',
+          order.email || '',
+          order.address || '',
+          order.city || '',
+          order.state || '',
+          order.pincode || '',
           item.product_id,
           item.product_name,
-          item.hsn_code || '',
+          item.sku || item.product_id,
+          hsnCode,
+          item.item_type || 'goods',
+          item.category || 'goods',
           item.quantity,
           item.unit,
           parseFloat(item.rate).toFixed(2),
-          item.tax_rate || '18',
-          parseFloat(item.total).toFixed(2)
-        ])
-      ].map(row => row.join(',')).join('\n');
+          'false', // Is Inclusive Tax
+          itemTax, // Item Tax
+          taxRate, // Item Tax %
+          'Tax Group', // Item Tax Type
+          '0', // Discount
+          order.status,
+          'Standard Template'
+        ];
+      });
+
+      const csvContent = [csvHeaders, ...csvRows]
+        .map(row => row.map(cell => {
+          // Escape cells with commas or quotes
+          const cellStr = String(cell);
+          if (cellStr.includes(',') || cellStr.includes('"')) {
+            return `"${cellStr.replace(/"/g, '""')}"`;
+          }
+          return cellStr;
+        }).join(','))
+        .join('\n');
 
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `order_${order.order_id}_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.setAttribute('download', `order_complete_${order.order_id}_${new Date().toISOString().slice(0, 10)}.csv`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -146,11 +236,156 @@ const Orders = () => {
     }
   };
 
+  const handleExportZohoCSV = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.append('status', statusFilter);
+      if (startDate) params.append('startDate', startDate);
+      if (endDate) params.append('endDate', endDate);
+      
+      // Fetch orders with customer and product details
+      const response = await axios.get(`/orders?${params.toString()}`);
+      const orders = response.data.data;
+      
+      if (!orders || orders.length === 0) {
+        alert('No orders found to export');
+        return;
+      }
+      
+      // Group orders by customer for invoice generation
+      const ordersByCustomer = {};
+      orders.forEach(order => {
+        if (!ordersByCustomer[order.customer_id]) {
+          ordersByCustomer[order.customer_id] = {
+            customer: order,
+            orders: []
+          };
+        }
+        ordersByCustomer[order.customer_id].orders.push(order);
+      });
+      
+      // Generate Zoho-compatible CSV
+      const zohoHeaders = [
+        'Invoice Number', 'Invoice Date', 'Customer Name', 'GST Treatment',
+        'GST Identification Number (GSTIN)', 'Place of Supply', 'Payment Terms',
+        'Payment Terms Label', 'Due Date', 'Currency Code', 'Item Name',
+        'SKU', 'HSN/SAC', 'Item Type', 'Quantity', 'Usage unit', 'Item Price',
+        'Is Inclusive Tax', 'Item Tax', 'Item Tax %', 'Item Tax Type', 'Discount', 'Template Name'
+      ];
+      
+      const zohoRows = [];
+      let invoiceNumber = 1001; // Start from 1001
+      
+      // Process each customer's orders
+      Object.values(ordersByCustomer).forEach(({ customer, orders: customerOrders }) => {
+        const invNumber = `INV-${String(invoiceNumber).padStart(4, '0')}`;
+        const today = new Date();
+        const paymentTermsDays = customer.payment_terms || 0;
+        const dueDate = new Date(today.getTime() + (paymentTermsDays * 24 * 60 * 60 * 1000));
+        
+        customerOrders.forEach(order => {
+          if (order.items && order.items.length > 0) {
+            order.items.forEach(item => {
+              // Auto-pad HSN code to 8 digits
+              let hsnCode = String(item.hsn_code || '').trim();
+              if (hsnCode && hsnCode.length < 8) {
+                hsnCode = hsnCode.padStart(8, '0');
+              }
+              
+              // Calculate tax details
+              const taxRate = parseFloat(item.tax_rate) || 18;
+              const itemPrice = parseFloat(item.rate) || 0;
+              const quantity = parseFloat(item.quantity) || 1;
+              
+              zohoRows.push([
+                invNumber,
+                format(today, 'yyyy-MM-dd'),
+                customer.customer_name,
+                customer.gst_treatment || 'business_gst',
+                customer.gstin || '',
+                customer.place_of_supply || 'KA',
+                paymentTermsDays,
+                customer.payment_terms_label || 'Due on Receipt',
+                format(dueDate, 'yyyy-MM-dd'),
+                'INR',
+                item.product_name,
+                item.sku || item.product_id,
+                hsnCode,
+                item.item_type || 'goods',
+                quantity,
+                item.unit || 'pcs',
+                itemPrice,
+                'false', // Is Inclusive Tax
+                `GST${taxRate}`, // Item Tax
+                taxRate, // Item Tax %
+                'Tax Group', // Item Tax Type
+                0, // Discount
+                'Standard Template' // Template Name
+              ]);
+            });
+          }
+        });
+        
+        invoiceNumber++;
+      });
+      
+      const csvContent = [zohoHeaders, ...zohoRows]
+        .map(row => row.map(cell => {
+          const cellStr = String(cell);
+          if (cellStr.includes(',') || cellStr.includes('"')) {
+            return `"${cellStr.replace(/"/g, '""')}"`;
+          }
+          return cellStr;
+        }).join(','))
+        .join('\n');
+      
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const dateRange = startDate && endDate ? `_${startDate}_to_${endDate}` : '';
+      link.setAttribute('download', `zoho_invoices${dateRange}_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      
+      alert(`Generated ${zohoRows.length} invoice line items for ${Object.keys(ordersByCustomer).length} customers`);
+    } catch (error) {
+      console.error('Error exporting Zoho CSV:', error);
+      alert('Failed to export Zoho CSV: ' + error.message);
+    }
+  };
+
   const filteredOrders = orders.filter((order) =>
     order.order_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
     order.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     order.customer_id.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  // Filter Hotel Empire orders based on search
+  const filteredHotelEmpireOrders = hotelEmpireOrders.filter((order) =>
+    order.order_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    order.customer_id.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+  // Get tomorrow's orders from both regular and Hotel Empire orders
+  const tomorrowRegularOrders = filteredOrders.filter(order => {
+    const orderDate = new Date(order.order_date).toISOString().split('T')[0];
+    return orderDate === tomorrowStr;
+  });
+
+  const tomorrowHotelOrders = filteredHotelEmpireOrders.filter(order => {
+    const orderDate = new Date(order.order_date).toISOString().split('T')[0];
+    return orderDate === tomorrowStr;
+  });
+
+  const tomorrowOrders = [...tomorrowRegularOrders, ...tomorrowHotelOrders];
+
+  const regularOrders = filteredOrders;
 
   const statusOptions = ['NEW', 'PROCESSING', 'COMPLETED', 'CANCELLED'];
   const statusColors = {
@@ -174,6 +409,13 @@ const Orders = () => {
         >
           <Download size={20} />
           Export CSV
+        </button>
+        <button
+          onClick={handleExportZohoCSV}
+          className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+        >
+          <Download size={20} />
+          Export Zoho CSV
         </button>
       </div>
 
@@ -238,8 +480,178 @@ const Orders = () => {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Hotel Empire Orders Section */}
+      {filteredHotelEmpireOrders.length > 0 && (
+        <div className="mb-6">
+          <div className="bg-gradient-to-r from-orange-500 to-red-500 text-white px-4 py-3 rounded-t-xl">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              🏨 Hotel Empire Orders ({filteredHotelEmpireOrders.length})
+            </h2>
+          </div>
+          <div className="bg-white rounded-b-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-orange-50">
+                  <tr>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Order ID</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Date</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Customer</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Items</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Amount</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Delivery Time</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Status</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredHotelEmpireOrders.map((order) => (
+                    <tr key={order.id} className="border-b hover:bg-orange-50 bg-orange-50/30">
+                      <td className="py-3 px-4 font-medium text-orange-700">{order.order_id}</td>
+                      <td className="py-3 px-4">{format(new Date(order.order_date), 'MMM dd, yyyy')}</td>
+                      <td className="py-3 px-4">
+                        <div className="font-medium text-orange-700">{order.customer_name}</div>
+                        <div className="text-sm text-gray-500">{order.customer_id}</div>
+                      </td>
+                      <td className="py-3 px-4">{order.item_count || 0}</td>
+                      <td className="py-3 px-4 font-medium">₹{parseFloat(order.total_amount || 0).toFixed(2)}</td>
+                      <td className="py-3 px-4">
+                        <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
+                          {order.delivery_time || 'Not set'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <select
+                          value={order.status}
+                          onChange={(e) => handleStatusChange(order.order_id, e.target.value)}
+                          className={`px-3 py-1 rounded-full text-sm ${statusColors[order.status]} border-0`}
+                        >
+                          {statusOptions.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => fetchOrderDetails(order.order_id)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded"
+                            title="View Details"
+                          >
+                            <Eye size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleExportSingleOrderCSV(order.order_id)}
+                            className="p-2 text-green-600 hover:bg-green-50 rounded"
+                            title="Download CSV"
+                          >
+                            <FileDown size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(order.order_id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded"
+                            title="Delete"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tomorrow's Orders Section */}
+      {tomorrowOrders.length > 0 && (
+        <div className="mb-6">
+          <div className="bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-4 py-3 rounded-t-xl">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              📅 Tomorrow's Orders - {format(tomorrow, 'MMM dd, yyyy')} ({tomorrowOrders.length})
+            </h2>
+            <p className="text-sm text-blue-100 mt-1">Prepare inventory for these orders</p>
+          </div>
+          <div className="bg-white rounded-b-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-blue-50">
+                  <tr>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Order ID</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Date</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Customer</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Items</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Amount</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Status</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-600">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tomorrowOrders.map((order) => (
+                    <tr key={order.id} className="border-b hover:bg-blue-50 bg-blue-50/30">
+                      <td className="py-3 px-4 font-medium text-blue-700">{order.order_id}</td>
+                      <td className="py-3 px-4">{format(new Date(order.order_date), 'MMM dd, yyyy')}</td>
+                      <td className="py-3 px-4">
+                        <div className="font-medium">{order.customer_name}</div>
+                        <div className="text-sm text-gray-500">{order.customer_id}</div>
+                      </td>
+                      <td className="py-3 px-4">{order.item_count || 0}</td>
+                      <td className="py-3 px-4 font-medium">₹{parseFloat(order.total_amount || 0).toFixed(2)}</td>
+                      <td className="py-3 px-4">
+                        <select
+                          value={order.status}
+                          onChange={(e) => handleStatusChange(order.order_id, e.target.value)}
+                          className={`px-3 py-1 rounded-full text-sm ${statusColors[order.status]} border-0`}
+                        >
+                          {statusOptions.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => fetchOrderDetails(order.order_id)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded"
+                            title="View Details"
+                          >
+                            <Eye size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleExportSingleOrderCSV(order.order_id)}
+                            className="p-2 text-green-600 hover:bg-green-50 rounded"
+                            title="Download CSV"
+                          >
+                            <FileDown size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(order.order_id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded"
+                            title="Delete"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Regular Orders Table */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-gray-100 px-4 py-3">
+          <h2 className="text-lg font-semibold text-gray-700">All Orders ({regularOrders.length})</h2>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50">
@@ -254,7 +666,7 @@ const Orders = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredOrders.map((order) => (
+              {regularOrders.map((order) => (
                 <tr key={order.id} className="border-b hover:bg-gray-50">
                   <td className="py-3 px-4 font-medium">{order.order_id}</td>
                   <td className="py-3 px-4">
@@ -344,6 +756,12 @@ const Orders = () => {
                     {format(new Date(selectedOrder.order_date), 'MMMM dd, yyyy')}
                   </p>
                 </div>
+                {selectedOrder.delivery_time && (
+                  <div>
+                    <p className="text-sm text-gray-500">Delivery Time</p>
+                    <p className="font-medium text-blue-600">{selectedOrder.delivery_time}</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-sm text-gray-500">Status</p>
                   <span className={`inline-block px-3 py-1 rounded-full text-sm ${statusColors[selectedOrder.status]}`}>
