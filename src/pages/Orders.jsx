@@ -149,7 +149,7 @@ const Orders = () => {
       
       // Create CSV content with Zoho-compatible column names + extras
       const csvHeaders = [
-        'Invoice Date', 'Due Date', 'Currency Code',
+        'Invoice Number', 'Invoice Date', 'Due Date', 'Currency Code',
         'Customer_ID', 'Customer Name', 'GST Treatment', 'GST Identification Number (GSTIN)',
         'Place of Supply', 'Payment Terms', 'Payment Terms Label',
         'Phone', 'Email', 'Address', 'City', 'State', 'Pincode',
@@ -158,6 +158,9 @@ const Orders = () => {
         'Is Inclusive Tax', 'Item Tax', 'Item Tax %', 'Item Tax Type', 'Discount',
         'Status', 'Template Name'
       ];
+
+      // Generate invoice number for this order
+      const invoiceNumber = `INV-${String(order.id || order.order_id).padStart(5, '0')}`;
 
       const csvRows = order.items.map(item => {
         // Auto-pad HSN code to 8 digits
@@ -176,6 +179,7 @@ const Orders = () => {
         const itemTax = `GST${taxRate}`;
 
         return [
+          invoiceNumber, // Invoice Number
           format(invoiceDate, 'yyyy-MM-dd'), // Invoice Date
           format(dueDate, 'yyyy-MM-dd'), // Due Date
           'INR', // Currency Code
